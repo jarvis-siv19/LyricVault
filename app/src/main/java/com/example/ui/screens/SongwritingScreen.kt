@@ -15,13 +15,10 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +67,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontStyle
@@ -113,6 +112,9 @@ fun SongwritingScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showLinePickerDialog by remember { mutableStateOf(false) }
     var isLoaded by remember { mutableStateOf(false) }
+
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     LaunchedEffect(songId) {
         if (songId != null && songId > 0L) {
@@ -216,9 +218,17 @@ fun SongwritingScreen(
         }
     }
 
-    BackHandler {
+    fun exitToPrevious() {
+        // Dismiss the keyboard and drop focus first: otherwise the IME stays
+        // open over the list screen after navigating back.
+        keyboardController?.hide()
+        focusManager.clearFocus()
         viewModel.audioPlayer.stop()
         persistSong { onNavigateBack() }
+    }
+
+    BackHandler {
+        exitToPrevious()
     }
 
     DisposableEffect(Unit) {
@@ -248,10 +258,7 @@ fun SongwritingScreen(
                 },
                 navigationIcon = {
                     IconButton(
-                        onClick = {
-                            viewModel.audioPlayer.stop()
-                            persistSong { onNavigateBack() }
-                        },
+                        onClick = { exitToPrevious() },
                         modifier = Modifier.testTag("songwriting_back_button")
                     ) {
                         Icon(
@@ -301,12 +308,16 @@ fun SongwritingScreen(
             )
         }
     ) { innerPadding ->
+        // NOTE: no imePadding() here on purpose. The manifest uses
+        // adjustResize, so the window already shrinks above the keyboard;
+        // adding imePadding counted the keyboard height twice and squeezed
+        // the whole editor to a black screen while the keyboard animated in.
+        // navigationBarsPadding is also unneeded: the outer Scaffold
+        // already insets this screen for the navigation bar.
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .navigationBarsPadding()
-                .imePadding()
         ) {
             val isSplitLayout = maxWidth >= 760.dp
 
@@ -583,7 +594,9 @@ private fun LyricEditorPane(
                 OutlinedTextField(
                     value = vibeDescription,
                     onValueChange = onVibeChange,
-                    label = { Text("Song Vibe & Premise (drives live Vault matches)") },
+                    // Short label on purpose: the old one wrapped to two
+                    // lines and overlapped the outline.
+                    label = { Text("Song Vibe & Premise", maxLines = 1) },
                     placeholder = {
                         Text("e.g. Late-night metro ride overthinking the masks people wear...")
                     },
@@ -776,31 +789,34 @@ private fun SuggestionsPane(
                         )
                     }
 
-                    // Mode Switcher: Whole Song Vibe vs Specific Line/Word
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item {
-                            ModeChip(
-                                selected = matchMode == MatchMode.WHOLE_SONG_VIBE,
-                                label = "Whole Song Vibe",
-                                onClick = { onMatchModeChange(MatchMode.WHOLE_SONG_VIBE) },
-                                tag = "match_mode_vibe"
-                            )
-                        }
-                        item {
-                            ModeChip(
-                                selected = matchMode == MatchMode.SPECIFIC_LINE,
-                                label = "Specific Line / Word",
-                                onClick = { onMatchModeChange(MatchMode.SPECIFIC_LINE) },
-                                tag = "match_mode_line"
-                            )
-                        }
+                    // Mode Switcher: Whole Song Vibe vs Specific Line.
+                    // A plain Row with weighted chips: the old LazyRow let
+                    // the second chip run past the card edge, half cut off.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ModeChip(
+                            selected = matchMode == MatchMode.WHOLE_SONG_VIBE,
+                            label = "Whole Song Vibe",
+                            onClick = { onMatchModeChange(MatchMode.WHOLE_SONG_VIBE) },
+                            tag = "match_mode_vibe",
+                            modifier = Modifier.weight(1f)
+                        )
+                        ModeChip(
+                            selected = matchMode == MatchMode.SPECIFIC_LINE,
+                            label = "Specific Line",
+                            onClick = { onMatchModeChange(MatchMode.SPECIFIC_LINE) },
+                            tag = "match_mode_line",
+                            modifier = Modifier.weight(1f)
+                        )
                     }
 
                     if (matchMode == MatchMode.SPECIFIC_LINE) {
                         OutlinedTextField(
                             value = specificLineQuery,
                             onValueChange = onSpecificLineQueryChange,
-                            label = { Text("Line, phrase, or word to match") },
+                            label = { Text("Line, phrase, or word to match", maxLines = 1) },
                             placeholder = { Text("Paste or type a line to check your Vault...") },
                             trailingIcon = {
                                 if (specificLineQuery.isNotEmpty()) {
@@ -980,7 +996,8 @@ private fun ModeChip(
     selected: Boolean,
     label: String,
     onClick: () -> Unit,
-    tag: String
+    tag: String,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         onClick = onClick,
@@ -990,7 +1007,7 @@ private fun ModeChip(
             width = 1.dp,
             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
         ),
-        modifier = Modifier
+        modifier = modifier
             .height(40.dp)
             .testTag(tag)
     ) {
@@ -1001,7 +1018,9 @@ private fun ModeChip(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

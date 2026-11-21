@@ -1,5 +1,13 @@
 package com.example.ui.navigation
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -29,9 +37,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -84,6 +95,30 @@ private val topLevelDestinations = listOf(
     )
 )
 
+// Navigation transitions. The NavHost default is a 700ms crossfade, which
+// left both screens semi-transparent at once (the double-exposed look in
+// recordings). Editor screens slide in/out opaque instead; top-level tabs
+// keep a short fade, which is the standard tab motion.
+private val tabEnter: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition = {
+    fadeIn(animationSpec = tween(200))
+}
+private val tabExit: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
+    fadeOut(animationSpec = tween(200))
+}
+private val editorEnter: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition = {
+    slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(300))
+}
+private val editorExit: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
+    slideOutHorizontally(targetOffsetX = { -it / 4 }, animationSpec = tween(300)) +
+        fadeOut(animationSpec = tween(300))
+}
+private val editorPopEnter: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition = {
+    slideInHorizontally(initialOffsetX = { -it / 4 }, animationSpec = tween(300))
+}
+private val editorPopExit: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
+    slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(300))
+}
+
 @Composable
 fun LyricVaultApp(viewModel: LyricVaultViewModel) {
     val navController = rememberNavController()
@@ -119,6 +154,17 @@ fun LyricVaultApp(viewModel: LyricVaultViewModel) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
     val showTopLevelChrome = currentRoute in setOf(Routes.VAULT, Routes.STUDIO, Routes.BACKUP)
+
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    // Never carry an open keyboard across a navigation: without this the IME
+    // stays up over the next screen (e.g. over the Vault list after backing
+    // out of the editor) until the user dismisses it by hand.
+    LaunchedEffect(currentRoute) {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
 
     val unusedCount = remember(allIdeas) { allIdeas.count { it.idea.usedCount == 0 } }
     val audioClipsCount = remember(allIdeas) { allIdeas.sumOf { it.audioBlockCount } }
@@ -196,7 +242,13 @@ fun LyricVaultApp(viewModel: LyricVaultViewModel) {
                     startDestination = Routes.VAULT,
                     modifier = Modifier.weight(1f)
                 ) {
-                    composable(Routes.VAULT) {
+                    composable(
+                        route = Routes.VAULT,
+                        enterTransition = tabEnter,
+                        exitTransition = tabExit,
+                        popEnterTransition = tabEnter,
+                        popExitTransition = tabExit
+                    ) {
                         VaultScreen(
                             allIdeasCount = allIdeas.size,
                             unusedIdeasCount = unusedCount,
@@ -219,7 +271,13 @@ fun LyricVaultApp(viewModel: LyricVaultViewModel) {
                         )
                     }
 
-                    composable(Routes.STUDIO) {
+                    composable(
+                        route = Routes.STUDIO,
+                        enterTransition = tabEnter,
+                        exitTransition = tabExit,
+                        popEnterTransition = tabEnter,
+                        popExitTransition = tabExit
+                    ) {
                         SongsListScreen(
                             songs = allSongs,
                             totalVaultIdeas = allIdeas.size,
@@ -232,7 +290,13 @@ fun LyricVaultApp(viewModel: LyricVaultViewModel) {
                         )
                     }
 
-                    composable(Routes.BACKUP) {
+                    composable(
+                        route = Routes.BACKUP,
+                        enterTransition = tabEnter,
+                        exitTransition = tabExit,
+                        popEnterTransition = tabEnter,
+                        popExitTransition = tabExit
+                    ) {
                         BackupSettingsScreen(
                             totalIdeas = allIdeas.size,
                             unusedIdeas = unusedCount,
@@ -252,7 +316,11 @@ fun LyricVaultApp(viewModel: LyricVaultViewModel) {
                         arguments = listOf(
                             navArgument("ideaId") { type = NavType.LongType },
                             navArgument("autoRecord") { type = NavType.BoolType }
-                        )
+                        ),
+                        enterTransition = editorEnter,
+                        exitTransition = editorExit,
+                        popEnterTransition = editorPopEnter,
+                        popExitTransition = editorPopExit
                     ) { entry ->
                         val id = entry.arguments?.getLong("ideaId") ?: 0L
                         val autoRecord = entry.arguments?.getBoolean("autoRecord") ?: false
@@ -270,7 +338,11 @@ fun LyricVaultApp(viewModel: LyricVaultViewModel) {
                         route = Routes.SONGWRITING,
                         arguments = listOf(
                             navArgument("songId") { type = NavType.LongType }
-                        )
+                        ),
+                        enterTransition = editorEnter,
+                        exitTransition = editorExit,
+                        popEnterTransition = editorPopEnter,
+                        popExitTransition = editorPopExit
                     ) { entry ->
                         val id = entry.arguments?.getLong("songId") ?: 0L
                         SongwritingScreen(

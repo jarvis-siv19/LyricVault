@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +18,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -67,7 +66,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.data.local.BlockType
@@ -81,6 +83,7 @@ import com.example.ui.components.LiveRecordingBar
 import com.example.ui.components.UsageBadge
 import com.example.ui.components.formatRelativeDate
 import com.example.ui.viewmodel.LyricVaultViewModel
+import java.util.Collections
 import java.util.UUID
 
 private data class EditableBlock(
@@ -92,7 +95,7 @@ private data class EditableBlock(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun IdeaEditorScreen(
     ideaId: Long?,
@@ -103,6 +106,8 @@ fun IdeaEditorScreen(
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     var currentId by remember { mutableLongStateOf(ideaId ?: 0L) }
     var createdAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -188,6 +193,10 @@ fun IdeaEditorScreen(
     }
 
     fun persistAndExit() {
+        // Dismiss the keyboard and drop focus first: otherwise the IME stays
+        // open over the list screen after navigating back.
+        keyboardController?.hide()
+        focusManager.clearFocus()
         if (recordingState.isRecording) {
             val recorded = viewModel.stopRecordingAudio()
             if (recorded != null) {
@@ -306,15 +315,18 @@ fun IdeaEditorScreen(
             )
         },
         bottomBar = {
-            // Free-flowing studio dock: add text block OR record inline audio melody tile right here
+            // Free-flowing studio dock: add text block OR record inline audio melody tile right here.
+            // NOTE: no imePadding() here on purpose. The manifest uses
+            // adjustResize, so the window already shrinks above the keyboard;
+            // adding imePadding counted the keyboard height twice and squeezed
+            // the content to nothing while the keyboard animated in.
+            // navigationBarsPadding is also unneeded: the outer Scaffold
+            // already insets this screen for the navigation bar.
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 tonalElevation = 3.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .imePadding()
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier
@@ -355,6 +367,10 @@ fun IdeaEditorScreen(
                                     blocks.add(EditableBlock(blockType = BlockType.TEXT, textContent = ""))
                                 },
                                 shape = RoundedCornerShape(14.dp),
+                                // Tight horizontal padding: the default 24dp
+                                // plus icon + label wrapped the text to two
+                                // lines, and the fixed 48dp height clipped it.
+                                contentPadding = PaddingValues(horizontal = 8.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
@@ -366,7 +382,11 @@ fun IdeaEditorScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("+ Text Block")
+                                Text(
+                                    text = "+ Text Block",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
 
                             Button(
@@ -376,6 +396,7 @@ fun IdeaEditorScreen(
                                     contentColor = MaterialTheme.colorScheme.onTertiary
                                 ),
                                 shape = RoundedCornerShape(14.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
@@ -387,7 +408,11 @@ fun IdeaEditorScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Record Melody")
+                                Text(
+                                    text = "Record Melody",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
@@ -491,7 +516,9 @@ fun IdeaEditorScreen(
                             OutlinedTextField(
                                 value = contextNote,
                                 onValueChange = { contextNote = it },
-                                label = { Text("Why it piqued my interest / where to use it") },
+                                // Short label on purpose: the old one wrapped
+                                // to two lines and overlapped the outline.
+                                label = { Text("Why it piqued my interest", maxLines = 1) },
                                 placeholder = {
                                     Text("e.g. Good for a late-night moody verse or psychological bridge...")
                                 },
@@ -510,7 +537,9 @@ fun IdeaEditorScreen(
                             OutlinedTextField(
                                 value = tags,
                                 onValueChange = { tags = it },
-                                label = { Text("Mood / concept tags (comma-separated)") },
+                                // Short label on purpose: the old one wrapped
+                                // to two lines and overlapped the outline.
+                                label = { Text("Mood / concept tags", maxLines = 1) },
                                 placeholder = { Text("metro, solitude, ego, hook") },
                                 singleLine = true,
                                 shape = RoundedCornerShape(14.dp),
@@ -581,6 +610,9 @@ fun IdeaEditorScreen(
                 ) { index, block ->
                     if (block.blockType == BlockType.TEXT) {
                         Surface(
+                            // animateItem is a LazyItemScope member, not a
+                            // top-level function: no import for it.
+                            modifier = Modifier.animateItem(),
                             shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.surface,
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -603,10 +635,7 @@ fun IdeaEditorScreen(
                                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                         if (index > 0) {
                                             IconButton(
-                                                onClick = {
-                                                    val item = blocks.removeAt(index)
-                                                    blocks.add(index - 1, item)
-                                                },
+                                                onClick = { Collections.swap(blocks, index, index - 1) },
                                                 modifier = Modifier.size(36.dp)
                                             ) {
                                                 Icon(
@@ -618,10 +647,7 @@ fun IdeaEditorScreen(
                                         }
                                         if (index < blocks.lastIndex) {
                                             IconButton(
-                                                onClick = {
-                                                    val item = blocks.removeAt(index)
-                                                    blocks.add(index + 1, item)
-                                                },
+                                                onClick = { Collections.swap(blocks, index, index + 1) },
                                                 modifier = Modifier.size(36.dp)
                                             ) {
                                                 Icon(
@@ -677,6 +703,7 @@ fun IdeaEditorScreen(
                         }
                     } else {
                         AudioTileCard(
+                            modifier = Modifier.animateItem(),
                             audioPath = block.audioFilePath,
                             durationMs = block.audioDurationMs,
                             caption = block.textContent,
@@ -688,16 +715,10 @@ fun IdeaEditorScreen(
                                 blocks[index] = block.copy(textContent = updated)
                             },
                             onMoveUp = if (index > 0) {
-                                {
-                                    val item = blocks.removeAt(index)
-                                    blocks.add(index - 1, item)
-                                }
+                                { Collections.swap(blocks, index, index - 1) }
                             } else null,
                             onMoveDown = if (index < blocks.lastIndex) {
-                                {
-                                    val item = blocks.removeAt(index)
-                                    blocks.add(index + 1, item)
-                                }
+                                { Collections.swap(blocks, index, index + 1) }
                             } else null,
                             onDelete = {
                                 val removed = blocks.removeAt(index)
