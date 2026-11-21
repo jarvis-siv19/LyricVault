@@ -82,6 +82,36 @@ data class IdeaUsageEntity(
     val usedAt: Long = System.currentTimeMillis()
 )
 
+/**
+ * One stored embedding per idea, per engine. Embeddings are engine-specific:
+ * vectors from one engine must never be compared with another engine's, so
+ * the engine id travels with the vector and the matcher only reads rows for
+ * the active engine. Switching engines re-embeds the vault (the old rows are
+ * left in place and reused if the user switches back).
+ *
+ * Note: ByteArray in a data class compares by reference; Room only uses it
+ * as a BLOB column, so that is fine here.
+ */
+@Entity(
+    tableName = "idea_embeddings",
+    foreignKeys = [
+        ForeignKey(
+            entity = IdeaNoteEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["ideaId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index(value = ["engineId"])]
+)
+data class IdeaEmbeddingEntity(
+    @PrimaryKey val ideaId: Long,
+    val embedding: ByteArray,
+    val engineId: String,
+    val dimensions: Int,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 data class IdeaNoteWithDetails(
     @Embedded val idea: IdeaNoteEntity,
     @Relation(

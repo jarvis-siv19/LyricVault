@@ -90,6 +90,23 @@ interface LyricVaultDao {
     @Query("UPDATE idea_notes SET usedCount = 0, updatedAt = :timestamp WHERE id = :ideaId")
     suspend fun resetIdeaUsedCount(ideaId: Long, timestamp: Long = System.currentTimeMillis())
 
+    // ---- Vector store: one embedding row per idea, per engine ----
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertEmbedding(embedding: IdeaEmbeddingEntity)
+
+    @Query("SELECT * FROM idea_embeddings WHERE engineId = :engineId")
+    suspend fun getEmbeddingsForEngine(engineId: String): List<IdeaEmbeddingEntity>
+
+    @Query("SELECT * FROM idea_embeddings WHERE ideaId = :ideaId AND engineId = :engineId LIMIT 1")
+    suspend fun getEmbedding(ideaId: Long, engineId: String): IdeaEmbeddingEntity?
+
+    @Query("DELETE FROM idea_embeddings WHERE ideaId = :ideaId")
+    suspend fun deleteEmbeddingsForIdea(ideaId: Long)
+
+    @Query("SELECT COUNT(*) FROM idea_embeddings WHERE engineId = :engineId")
+    suspend fun countEmbeddingsForEngine(engineId: String): Int
+
     @Transaction
     suspend fun saveIdeaWithBlocks(
         idea: IdeaNoteEntity,

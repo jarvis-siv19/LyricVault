@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -61,6 +62,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -86,6 +88,7 @@ import com.example.domain.matching.VaultMatchResult
 import com.example.ui.components.AudioTileCard
 import com.example.ui.components.MatchScoreBadge
 import com.example.ui.components.UsageBadge
+import com.example.ui.viewmodel.ExplanationState
 import com.example.ui.viewmodel.LyricVaultViewModel
 import kotlinx.coroutines.delay
 
@@ -97,6 +100,7 @@ fun SongwritingScreen(
     playbackState: PlaybackState,
     viewModel: LyricVaultViewModel,
     onOpenIdea: (Long) -> Unit,
+    onOpenAiSettings: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
     var currentSongId by remember { mutableLongStateOf(songId ?: 0L) }
@@ -149,26 +153,33 @@ fun SongwritingScreen(
     }
 
     // Live offline grounded matching whenever vibe, lyrics, line query, or vault changes
+    // The effective query is shared with "Why this fits" explanations, so it
+    // lives in one place.
+    fun effectiveQuery(): String = when (matchMode) {
+        MatchMode.WHOLE_SONG_VIBE -> {
+            buildString {
+                if (vibeDescription.isNotBlank()) {
+                    appendLine(vibeDescription)
+                    appendLine(vibeDescription) // weight the song's stated vibe heavily
+                }
+                if (songTitle.isNotBlank()) appendLine(songTitle)
+                if (lyricsField.text.isNotBlank()) {
+                    append(lyricsField.text.takeLast(600))
+                }
+            }.trim()
+        }
+        MatchMode.SPECIFIC_LINE -> specificLineQuery.trim()
+    }
+
+    val aiUiState by viewModel.aiUiState.collectAsState()
+    val explanations by viewModel.explanations.collectAsState()
+    val llmConfigured = aiUiState.enabled && aiUiState.llmId != com.example.ai.AiSettings.LLM_NONE
+
     LaunchedEffect(vibeDescription, lyricsField.text, specificLineQuery, matchMode, allIdeas) {
         delay(180L)
-        val effectiveQuery = when (matchMode) {
-            MatchMode.WHOLE_SONG_VIBE -> {
-                buildString {
-                    if (vibeDescription.isNotBlank()) {
-                        appendLine(vibeDescription)
-                        appendLine(vibeDescription) // weight the song's stated vibe heavily
-                    }
-                    if (songTitle.isNotBlank()) appendLine(songTitle)
-                    if (lyricsField.text.isNotBlank()) {
-                        append(lyricsField.text.takeLast(600))
-                    }
-                }.trim()
-            }
-            MatchMode.SPECIFIC_LINE -> specificLineQuery.trim()
-        }
         matchResult = viewModel.computeMatches(
             ideas = allIdeas,
-            query = effectiveQuery,
+            query = effectiveQuery(),
             mode = matchMode
         )
     }
@@ -352,6 +363,11 @@ fun SongwritingScreen(
                         onInsertAndMarkUsed = { id, snippet -> markIdeaUsedHere(id, alsoInsertText = snippet) },
                         onOpenIdea = onOpenIdea,
                         onOpenLinePicker = { showLinePickerDialog = true },
+                        aiEnabled = aiUiState.enabled,
+                        llmConfigured = llmConfigured,
+                        explanations = explanations,
+                        onExplain = { id -> viewModel.explainMatch(id, effectiveQuery()) },
+                        onOpenAiSettings = onOpenAiSettings,
                         modifier = Modifier
                             .weight(0.9f)
                             .fillMaxHeight()
@@ -441,6 +457,11 @@ fun SongwritingScreen(
                             },
                             onOpenIdea = onOpenIdea,
                             onOpenLinePicker = { showLinePickerDialog = true },
+                            aiEnabled = aiUiState.enabled,
+                            llmConfigured = llmConfigured,
+                            explanations = explanations,
+                            onExplain = { id -> viewModel.explainMatch(id, effectiveQuery()) },
+                            onOpenAiSettings = onOpenAiSettings,
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
@@ -740,6 +761,11 @@ private fun SuggestionsPane(
     onInsertAndMarkUsed: (Long, String) -> Unit,
     onOpenIdea: (Long) -> Unit,
     onOpenLinePicker: () -> Unit,
+    aiEnabled: Boolean,
+    llmConfigured: Boolean,
+    explanations: Map<Long, ExplanationState>,
+    onExplain: (Long) -> Unit,
+    onOpenAiSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -747,6 +773,44 @@ private fun SuggestionsPane(
         contentPadding = PaddingValues(bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (!aiEnabled) {
+            item(key = "ai_enable_banner") {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Smarter matching is available",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "AI matching finds ideas by meaning, not just shared words — on your phone, offline.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                        TextButton(onClick = onOpenAiSettings) {
+                            Text("Enable")
+                        }
+                    }
+                }
+            }
+        }
         item(key = "suggestions_controls") {
             Surface(
                 shape = RoundedCornerShape(18.dp),
@@ -918,7 +982,10 @@ private fun SuggestionsPane(
                         onInsertAndMarkUsed = {
                             onInsertAndMarkUsed(item.ideaDetail.idea.id, item.ideaDetail.combinedLyricText.ifBlank { item.bestSnippet })
                         },
-                        onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) }
+                        onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) },
+                        llmConfigured = llmConfigured,
+                        explanation = explanations[item.ideaDetail.idea.id] ?: ExplanationState.Idle,
+                        onExplain = { onExplain(item.ideaDetail.idea.id) }
                     )
                 }
             }
@@ -967,7 +1034,10 @@ private fun SuggestionsPane(
                         onInsertAndMarkUsed = {
                             onInsertAndMarkUsed(item.ideaDetail.idea.id, item.ideaDetail.combinedLyricText.ifBlank { item.bestSnippet })
                         },
-                        onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) }
+                        onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) },
+                        llmConfigured = llmConfigured,
+                        explanation = explanations[item.ideaDetail.idea.id] ?: ExplanationState.Idle,
+                        onExplain = { onExplain(item.ideaDetail.idea.id) }
                     )
                 }
             }
@@ -1016,7 +1086,10 @@ private fun VaultSuggestionCard(
     onSeek: (String, Float) -> Unit,
     onMarkUsed: () -> Unit,
     onInsertAndMarkUsed: () -> Unit,
-    onOpenIdea: () -> Unit
+    onOpenIdea: () -> Unit,
+    llmConfigured: Boolean,
+    explanation: ExplanationState,
+    onExplain: () -> Unit
 ) {
     val detail = match.ideaDetail
     val audioBlocks = remember(detail) {
@@ -1131,6 +1204,70 @@ private fun VaultSuggestionCard(
                     onSeek = onSeek,
                     editable = false
                 )
+            }
+
+            // "Why this fits" — one on-device (or Gemini) sentence, on demand.
+            if (llmConfigured) {
+                when (explanation) {
+                    is ExplanationState.Idle -> {
+                        TextButton(
+                            onClick = onExplain,
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Why this fits")
+                        }
+                    }
+                    is ExplanationState.Loading -> {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                            Text(
+                                text = "Thinking…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    is ExplanationState.Done -> {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        ) {
+                            Text(
+                                text = explanation.text,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                    is ExplanationState.Error -> {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        ) {
+                            Text(
+                                text = explanation.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = onExplain) { Text("Retry") }
+                        }
+                    }
+                }
             }
 
             Row(
