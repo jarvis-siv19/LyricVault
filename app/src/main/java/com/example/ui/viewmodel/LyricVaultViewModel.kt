@@ -435,6 +435,17 @@ class LyricVaultViewModel(application: Application) : AndroidViewModel(applicati
                         ) {
                             reembedVault()
                         }
+                        // Downloading an LLM without tapping its radio left
+                        // it installed but unselected, so explanations still
+                        // said "no model selected". Auto-select it when no
+                        // explanation model is picked yet.
+                        if (model.kind == com.example.ai.ModelKind.LLM &&
+                            aiSettings.llmId == AiSettings.LLM_NONE
+                        ) {
+                            aiService.setLlm(model.id)
+                            _snackbarMessage.value =
+                                "${model.displayName} installed and selected as your explanation model."
+                        }
                         refreshAiState()
                     }
                     WorkInfo.State.FAILED -> {

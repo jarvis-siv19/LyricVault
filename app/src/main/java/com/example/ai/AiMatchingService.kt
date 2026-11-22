@@ -52,6 +52,8 @@ class AiMatchingService(
     private var cachedLlm: LlmEngine? = null
     private var cachedLlmId: String? = null
     private var gpuFailedOnce = false
+    /** Last error from building the selected LLM, kept so the UI can name it. */
+    private var lastLlmBuildError: Throwable? = null
 
     private val litertCacheDir: File
         get() = File(appContext.cacheDir, "litertlm").also { it.mkdirs() }
@@ -176,13 +178,15 @@ class AiMatchingService(
     /**
      * One short sentence explaining why [detail] fits [query]. Throws when
      * no LLM is selected or ready — the caller turns that into UI text.
+     *
+     * The error names the REAL reason: "no model selected" was previously
+     * shown for every failure (download unfinished, low free RAM, load
+     * crash), which sent users back to settings when the model was already
+     * selected and installed.
      */
     suspend fun explainMatch(detail: IdeaNoteWithDetails, query: String): String {
         val llm = activeLlm()
-            ?: throw IllegalStateException(
-                "No explanation model selected. Pick one in AI settings " +
-                    "(download an on-device model or add a Gemini API key)."
-            )
+            ?: throw IllegalStateException(llmFailureReason())
         val prompt = buildString {
             appendLine(
                 "You are a songwriting assistant. Answer in ONE short sentence " +
@@ -220,10 +224,57 @@ class AiMatchingService(
             if (cachedLlmId == llmCacheKey(llmId)) return it
         }
         closeLlmLocked()
-        val built = runCatching { buildLlm(llmId) }.getOrNull() ?: return null
+        val built = runCatching { buildLlm(llmId) }
+            .onFailure { lastLlmBuildError = it }
+            .getOrNull() ?: return null
+        lastLlmBuildError = null
         cachedLlm = built
         cachedLlmId = llmCacheKey(llmId)
         built
+    }
+
+    /**
+     * Human-readable reason the selected explanation model is not usable
+     * right now. Checked without building an engine, so it is safe to call
+     * from the error path of [explainMatch].
+     */
+    fun llmFailureReason(): String {
+        val llmId = settings.llmId
+        if (llmId == AiSettings.LLM_NONE) {
+            return "No explanation model selected. Pick one in AI settings " +
+                "(download an on-device model or add a Gemini API key)."
+        }
+        if (llmId == "gemini") {
+            return if (apiKeyStore.getGeminiKey() == null) {
+                "Gemini is selected, but no Gemini API key is saved. " +
+                    "Add your key in AI settings."
+            } else {
+                lastLlmBuildError?.message?.let {
+                    "Gemini failed to start: $it"
+                } ?: "Gemini is selected but could not start. " +
+                    "Check your key in AI settings and retry."
+            }
+        }
+        val model = ModelCatalog.byId(llmId)
+            ?: return "The selected explanation model is no longer available. " +
+                "Pick another one in AI settings."
+        if (!store.isInstalled(model)) {
+            return "${model.displayName} is selected but not fully downloaded yet. " +
+                "Finish the download in AI settings — downloads are Wi-Fi only " +
+                "by default, so check you are on Wi-Fi."
+        }
+        val current = DeviceTiers.detectSpecs(appContext)
+        if (!DeviceTiers.canLoadNow(model, current)) {
+            return "Not enough free RAM right now to load ${model.displayName} " +
+                "(needs ${formatBytes(model.minFreeRamBytes)} free, " +
+                "${formatBytes(current.availRamBytes)} available). " +
+                "Close other apps and retry, or pick a smaller model."
+        }
+        return lastLlmBuildError?.message?.let {
+            "${model.displayName} failed to load: $it Try deleting it and " +
+                "re-downloading in AI settings, or pick a smaller model."
+        } ?: "${model.displayName} is selected but could not load. " +
+            "Try deleting it and re-downloading in AI settings."
     }
 
     private fun llmCacheKey(llmId: String): String =
