@@ -26,6 +26,19 @@ data class VaultMatchResult(
 }
 
 /**
+ * Matches split by engine (issue #8): the AI (vector) matches and the
+ * keyword matches are kept in separate sections instead of being merged
+ * into one list. The same idea can appear in both — each section shows
+ * what its own engine found, with its own score and reason.
+ */
+data class SplitMatchResult(
+    val aiMatches: VaultMatchResult = VaultMatchResult(),
+    val keywordMatches: VaultMatchResult = VaultMatchResult()
+) {
+    val totalCount: Int get() = aiMatches.totalCount + keywordMatches.totalCount
+}
+
+/**
  * 100% On-Device Offline Similarity Engine for LyricVault.
  * Strictly grounded in the songwriter's own saved notes — never invents new lyrics.
  *

@@ -1,10 +1,13 @@
 # AI matching — architecture
 
-LyricVault's matching is **hybrid**: the original keyword matcher
-(`OfflineVaultMatcher`, TF-IDF + concept clusters + trigrams + rhyme) always
-runs, and **vector search layers on top** when AI matching is enabled and an
-embedder is ready. If the embedder is missing (AI off, model not downloaded,
-no API key), matching behaves exactly as before.
+LyricVault's matching runs two engines side by side: the original keyword
+matcher (`OfflineVaultMatcher`, TF-IDF + concept clusters + trigrams +
+rhyme) always runs, and **vector search runs alongside it** when AI
+matching is enabled and an embedder is ready. The two engines' results are
+kept in **separate sections** (issue #8) — an AI section and a keyword
+section — instead of being merged into one list. If the embedder is missing
+(AI off, model not downloaded, no API key), matching behaves exactly as
+before (keyword section only).
 
 All code lives in `app/src/main/java/com/example/ai/`.
 
@@ -22,7 +25,7 @@ All code lives in `app/src/main/java/com/example/ai/`.
 | Gemini client | `GeminiClient.kt` | `gemini-embedding-001` + `generateContent`; key in the `x-goog-api-key` header, never in a URL |
 | Key storage | `ApiKeyStore.kt` | EncryptedSharedPreferences (AES256_GCM); plain-prefs fallback with an honest UI flag if KeyStore is unavailable |
 | Settings | `AiSettings.kt` | Plain prefs: enabled, embedder, LLM, backend, Wi-Fi-only, Gemini model name |
-| Orchestrator | `AiMatchingService.kt` | Hybrid match + merge, vault embedding, engine caching, GPU→CPU fallback, RAM load gate |
+| Orchestrator | `AiMatchingService.kt` | Split match (AI + keyword sections), vault embedding, engine caching, GPU→CPU fallback, RAM load gate |
 | Vector store | `IdeaEmbeddingEntity` + DAO + `LyricVaultDatabase` v2 | `idea_embeddings` table (ideaId FK CASCADE, embedding BLOB, engineId, dimensions, updatedAt) |
 
 ## Embeddings are engine-specific
@@ -105,6 +108,22 @@ unit-tested). The effective instruction steers two things:
 The songwriting screen shows the instruction actually in effect under the
 match-mode chips ("Matching with instruction: …"), and matches re-run live
 when either the per-song or the global instruction changes.
+
+## Split by matching type (issue #8)
+
+`AiMatchingService.match()` returns a `SplitMatchResult` with two
+`VaultMatchResult`s — `aiMatches` (vector) and `keywordMatches` — instead
+of one merged list. The split itself is the pure function
+`splitResults(keyword, vector)`: keyword results pass through untouched,
+vector results are sorted by score and split fresh/used with the same caps
+as before (25 fresh, 15 used).
+
+There is deliberately **no cross-engine dedupe**: an idea matched by both
+engines appears in both sections, each with its own score and reason, so
+the songwriter can see *why* each engine surfaced it. The suggestions tab
+renders an "AI MATCHES" section first, then "KEYWORD MATCHES"; each keeps
+the fresh/already-used sub-grouping. With AI off there is no AI section at
+all. (The old `mergeResults` hybrid merge was removed with this change.)
 
 ## Known limits
 

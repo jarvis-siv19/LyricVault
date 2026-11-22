@@ -6,6 +6,7 @@ import com.example.data.local.IdeaNoteWithDetails
 import com.example.data.local.LyricVaultDao
 import com.example.domain.matching.MatchMode
 import com.example.domain.matching.OfflineVaultMatcher
+import com.example.domain.matching.SplitMatchResult
 import com.example.domain.matching.VaultMatchItem
 import com.example.domain.matching.VaultMatchResult
 import com.google.ai.edge.litertlm.Backend
@@ -17,13 +18,17 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 /**
- * Orchestrates AI matching: hybrid keyword + vector search, embedding the
+ * Orchestrates AI matching: keyword + vector search, embedding the
  * vault on save and on engine switches, and one-sentence LLM explanations.
  *
  * Design rules:
- * - Keyword matching always runs. Vector search is layered on top; when no
+ * - Keyword matching always runs. Vector search runs alongside it; when no
  *   embedder is ready (AI off, model not downloaded, no API key), matching
  *   behaves exactly as before.
+ * - The two engines' results are kept SEPARATE (issue #8): [match] returns
+ *   a [SplitMatchResult] with an AI section and a keyword section, so the
+ *   UI shows which engine found what. An idea matched by both appears in
+ *   both sections, each with its own score and reason.
  * - Embeddings are engine-specific. The matcher only reads rows for the
  *   active engine, and switching engines re-embeds the vault.
  * - Embedding failures never break saving or matching: they are swallowed
@@ -65,18 +70,17 @@ class AiMatchingService(
         query: String,
         mode: MatchMode,
         instruction: String = ""
-    ): VaultMatchResult {
+    ): SplitMatchResult {
         val keyword = OfflineVaultMatcher.matchVault(ideas = ideas, queryText = query, mode = mode)
-        val embedder = activeEmbedder() ?: return keyword
-        if (query.isBlank()) return keyword
+        val embedder = activeEmbedder() ?: return SplitMatchResult(keywordMatches = keyword)
+        if (query.isBlank()) return SplitMatchResult(keywordMatches = keyword)
         // The instruction steers the vector search by riding inside the
         // embedded query; keyword matching is term-based and cannot take
         // instructions, so it always sees the raw query.
         val vectorItems = runCatching {
             vectorMatch(ideas, instructionQuery(query, instruction), embedder)
-        }.getOrElse { return keyword }
-        if (vectorItems.isEmpty()) return keyword
-        return mergeResults(keyword, vectorItems)
+        }.getOrElse { return SplitMatchResult(keywordMatches = keyword) }
+        return splitResults(keyword, vectorItems)
     }
 
     private suspend fun vectorMatch(
@@ -437,46 +441,25 @@ class AiMatchingService(
         }
 
         /**
-         * Hybrid merge: keyword results ∪ vector results, deduplicated by
-         * idea. When both engines match the same idea, the higher score wins
-         * and the reasons combine. Pure — covered by unit tests.
+         * Split by engine (issue #8): keyword results pass through untouched
+         * into their own section, and vector results form the AI section,
+         * split fresh/used with the same caps as before. No cross-engine
+         * dedupe — an idea matched by both engines appears in both sections,
+         * each with its own score and reason. Pure — covered by unit tests.
          */
-        fun mergeResults(
+        fun splitResults(
             keyword: VaultMatchResult,
             vector: List<VaultMatchItem>
-        ): VaultMatchResult {
-            val byId = LinkedHashMap<Long, VaultMatchItem>()
-            (keyword.freshUnusedMatches + keyword.alreadyUsedMatches).forEach { item ->
-                byId[item.ideaDetail.idea.id] = item
-            }
-            vector.forEach { item ->
-                val id = item.ideaDetail.idea.id
-                val existing = byId[id]
-                byId[id] = if (existing == null) {
-                    item
-                } else {
-                    existing.copy(
-                        scorePercent = maxOf(existing.scorePercent, item.scorePercent),
-                        matchReason = mergeReasons(existing.matchReason, item.matchReason),
-                        matchedTerms = (existing.matchedTerms + item.matchedTerms)
-                            .distinct().take(4)
-                    )
-                }
-            }
-            val sorted = byId.values.sortedWith(
-                compareByDescending<VaultMatchItem> { it.scorePercent }
-                    .thenByDescending { it.ideaDetail.idea.updatedAt }
+        ): SplitMatchResult {
+            val sorted = vector.sortedByDescending { it.scorePercent }
+            return SplitMatchResult(
+                aiMatches = VaultMatchResult(
+                    freshUnusedMatches = sorted.filter { it.ideaDetail.idea.usedCount == 0 }.take(25),
+                    alreadyUsedMatches = sorted.filter { it.ideaDetail.idea.usedCount > 0 }.take(15),
+                    querySummary = keyword.querySummary
+                ),
+                keywordMatches = keyword
             )
-            return VaultMatchResult(
-                freshUnusedMatches = sorted.filter { it.ideaDetail.idea.usedCount == 0 }.take(25),
-                alreadyUsedMatches = sorted.filter { it.ideaDetail.idea.usedCount > 0 }.take(15),
-                querySummary = keyword.querySummary
-            )
-        }
-
-        private fun mergeReasons(a: String, b: String): String {
-            if (a == b) return a
-            return listOf(a, b).joinToString(" • ")
         }
     }
 }

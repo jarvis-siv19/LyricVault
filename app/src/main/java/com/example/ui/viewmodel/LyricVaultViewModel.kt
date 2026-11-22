@@ -37,7 +37,7 @@ import com.example.domain.audio.PlaybackState
 import com.example.domain.audio.RecordedAudioResult
 import com.example.domain.audio.RecordingState
 import com.example.domain.matching.MatchMode
-import com.example.domain.matching.VaultMatchResult
+import com.example.domain.matching.SplitMatchResult
 import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -301,9 +301,11 @@ class LyricVaultViewModel(application: Application) : AndroidViewModel(applicati
         query: String,
         mode: MatchMode,
         songInstruction: String? = null
-    ): VaultMatchResult = withContext(Dispatchers.Default) {
-        // Hybrid: keyword matching always runs; vector search layers on top
-        // when AI is enabled and an embedder is ready. The instruction
+    ): SplitMatchResult = withContext(Dispatchers.Default) {
+        // Keyword matching always runs; vector search runs alongside it
+        // when AI is enabled and an embedder is ready. The results stay
+        // SPLIT by engine (issue #8) — the UI shows an AI section and a
+        // keyword section instead of one merged list. The instruction
         // steers the vector side (and explanations); a per-song instruction
         // overrides the global one for this song.
         aiService.match(

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FindInPage
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -82,6 +85,7 @@ import com.example.data.local.IdeaNoteWithDetails
 import com.example.data.local.SongEntity
 import com.example.domain.audio.PlaybackState
 import com.example.domain.matching.MatchMode
+import com.example.domain.matching.SplitMatchResult
 import com.example.domain.matching.VaultMatchItem
 import com.example.domain.matching.VaultMatchResult
 import com.example.ui.components.AudioTileCard
@@ -115,7 +119,7 @@ fun SongwritingScreen(
     var activeCompactTab by remember { mutableIntStateOf(0) }
     var matchMode by remember { mutableStateOf(MatchMode.WHOLE_SONG_VIBE) }
     var specificLineQuery by remember { mutableStateOf("") }
-    var matchResult by remember { mutableStateOf(VaultMatchResult()) }
+    var matchResult by remember { mutableStateOf(SplitMatchResult()) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showLinePickerDialog by remember { mutableStateOf(false) }
     var isLoaded by remember { mutableStateOf(false) }
@@ -848,7 +852,7 @@ private fun SuggestionsPane(
     specificLineQuery: String,
     onSpecificLineQueryChange: (String) -> Unit,
     vibeDescription: String,
-    matchResult: VaultMatchResult,
+    matchResult: SplitMatchResult,
     totalVaultIdeas: Int,
     playbackState: PlaybackState,
     onTogglePlay: (String) -> Unit,
@@ -1076,96 +1080,178 @@ private fun SuggestionsPane(
                 }
             }
         } else {
-            // Section 1: Fresh Unused Matches
-            if (matchResult.freshUnusedMatches.isNotEmpty()) {
-                item(key = "fresh_header") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "FRESH UNUSED MATCHES (${matchResult.freshUnusedMatches.size})",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                }
-                items(
-                    items = matchResult.freshUnusedMatches,
-                    key = { "fresh_${it.ideaDetail.idea.id}" }
-                ) { item ->
-                    VaultSuggestionCard(
-                        match = item,
-                        isAlreadyUsedSection = false,
-                        playbackState = playbackState,
-                        onTogglePlay = onTogglePlay,
-                        onSeek = onSeek,
-                        onMarkUsed = { onMarkUsed(item.ideaDetail.idea.id) },
-                        onInsertAndMarkUsed = {
-                            onInsertAndMarkUsed(item.ideaDetail.idea.id, item.ideaDetail.combinedLyricText.ifBlank { item.bestSnippet })
-                        },
-                        onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) },
-                        llmConfigured = llmConfigured,
-                        explanation = explanations[item.ideaDetail.idea.id] ?: ExplanationState.Idle,
-                        onExplain = { onExplain(item.ideaDetail.idea.id) }
+            // Two sub-sections by matching type (issue #8): AI matches
+            // first, then keyword matches. The same idea can appear in
+            // both — each section shows what its own engine found, with
+            // its own score and reason. With AI off there is no AI
+            // section at all (the banner above already explains why).
+            if (aiEnabled) {
+                matchTypeSection(
+                    prefix = "ai",
+                    title = "AI MATCHES",
+                    icon = Icons.Filled.AutoAwesome,
+                    result = matchResult.aiMatches,
+                    emptyText = "No ideas matched by meaning for this query.",
+                    playbackState = playbackState,
+                    onTogglePlay = onTogglePlay,
+                    onSeek = onSeek,
+                    onMarkUsed = onMarkUsed,
+                    onInsertAndMarkUsed = onInsertAndMarkUsed,
+                    onOpenIdea = onOpenIdea,
+                    llmConfigured = llmConfigured,
+                    explanations = explanations,
+                    onExplain = onExplain
+                )
+            }
+            matchTypeSection(
+                prefix = "keyword",
+                title = "KEYWORD MATCHES",
+                icon = Icons.Filled.Search,
+                result = matchResult.keywordMatches,
+                emptyText = "No ideas matched by shared words for this query.",
+                playbackState = playbackState,
+                onTogglePlay = onTogglePlay,
+                onSeek = onSeek,
+                onMarkUsed = onMarkUsed,
+                onInsertAndMarkUsed = onInsertAndMarkUsed,
+                onOpenIdea = onOpenIdea,
+                llmConfigured = llmConfigured,
+                explanations = explanations,
+                onExplain = onExplain
+            )
+        }
+    }
+}
+
+/**
+ * One matching-type section inside the suggestions list (issue #8): a
+ * header naming the engine ("AI MATCHES" / "KEYWORD MATCHES"), then fresh
+ * ideas, then already-used ideas. All item keys carry the section prefix
+ * because the same idea can appear in both sections.
+ */
+private fun LazyListScope.matchTypeSection(
+    prefix: String,
+    title: String,
+    icon: ImageVector,
+    result: VaultMatchResult,
+    emptyText: String,
+    playbackState: PlaybackState,
+    onTogglePlay: (String) -> Unit,
+    onSeek: (String, Float) -> Unit,
+    onMarkUsed: (Long) -> Unit,
+    onInsertAndMarkUsed: (Long, String) -> Unit,
+    onOpenIdea: (Long) -> Unit,
+    llmConfigured: Boolean,
+    explanations: Map<Long, ExplanationState>,
+    onExplain: (Long) -> Unit
+) {
+    item(key = "${prefix}_header") {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = "$title (${result.totalCount})",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+    if (result.totalCount == 0) {
+        item(key = "${prefix}_empty") {
+            Text(
+                text = emptyText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
+        return
+    }
+    if (result.freshUnusedMatches.isNotEmpty()) {
+        item(key = "${prefix}_fresh_header") {
+            Text(
+                text = "FRESH UNUSED (${result.freshUnusedMatches.size})",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
+        items(
+            items = result.freshUnusedMatches,
+            key = { "${prefix}_fresh_${it.ideaDetail.idea.id}" }
+        ) { item ->
+            VaultSuggestionCard(
+                match = item,
+                isAlreadyUsedSection = false,
+                playbackState = playbackState,
+                onTogglePlay = onTogglePlay,
+                onSeek = onSeek,
+                onMarkUsed = { onMarkUsed(item.ideaDetail.idea.id) },
+                onInsertAndMarkUsed = {
+                    onInsertAndMarkUsed(item.ideaDetail.idea.id, item.ideaDetail.combinedLyricText.ifBlank { item.bestSnippet })
+                },
+                onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) },
+                llmConfigured = llmConfigured,
+                explanation = explanations[item.ideaDetail.idea.id] ?: ExplanationState.Idle,
+                onExplain = { onExplain(item.ideaDetail.idea.id) }
+            )
+        }
+    }
+    if (result.alreadyUsedMatches.isNotEmpty()) {
+        item(key = "${prefix}_used_header") {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "ALREADY USED — REUSE IF YOU WANT (${result.alreadyUsedMatches.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary
                     )
                 }
             }
-
-            // Section 2: Already Used Matches (Clearly Separated!)
-            if (matchResult.alreadyUsedMatches.isNotEmpty()) {
-                item(key = "used_divider_header") {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.padding(horizontal = 4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.History,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "ALREADY USED — REUSE IF YOU WANT (${matchResult.alreadyUsedMatches.size})",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-                }
-
-                items(
-                    items = matchResult.alreadyUsedMatches,
-                    key = { "used_${it.ideaDetail.idea.id}" }
-                ) { item ->
-                    VaultSuggestionCard(
-                        match = item,
-                        isAlreadyUsedSection = true,
-                        playbackState = playbackState,
-                        onTogglePlay = onTogglePlay,
-                        onSeek = onSeek,
-                        onMarkUsed = { onMarkUsed(item.ideaDetail.idea.id) },
-                        onInsertAndMarkUsed = {
-                            onInsertAndMarkUsed(item.ideaDetail.idea.id, item.ideaDetail.combinedLyricText.ifBlank { item.bestSnippet })
-                        },
-                        onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) },
-                        llmConfigured = llmConfigured,
-                        explanation = explanations[item.ideaDetail.idea.id] ?: ExplanationState.Idle,
-                        onExplain = { onExplain(item.ideaDetail.idea.id) }
-                    )
-                }
-            }
+        }
+        items(
+            items = result.alreadyUsedMatches,
+            key = { "${prefix}_used_${it.ideaDetail.idea.id}" }
+        ) { item ->
+            VaultSuggestionCard(
+                match = item,
+                isAlreadyUsedSection = true,
+                playbackState = playbackState,
+                onTogglePlay = onTogglePlay,
+                onSeek = onSeek,
+                onMarkUsed = { onMarkUsed(item.ideaDetail.idea.id) },
+                onInsertAndMarkUsed = {
+                    onInsertAndMarkUsed(item.ideaDetail.idea.id, item.ideaDetail.combinedLyricText.ifBlank { item.bestSnippet })
+                },
+                onOpenIdea = { onOpenIdea(item.ideaDetail.idea.id) },
+                llmConfigured = llmConfigured,
+                explanation = explanations[item.ideaDetail.idea.id] ?: ExplanationState.Idle,
+                onExplain = { onExplain(item.ideaDetail.idea.id) }
+            )
         }
     }
 }
